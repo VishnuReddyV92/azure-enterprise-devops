@@ -26,144 +26,85 @@ variables:
 pool:
   vmImage: 'ubuntu-latest'
 
-stages:
-  # STAGE 1: TERRAFORM PLAN (Runs only if parameter is true)
-  - stage: Terraform_Plan
-    displayName: '1. Infrastructure Plan (OIDC + TFC)'
-    condition: and(succeeded(), eq('${{ parameters.runTerraform }}', true))
-    jobs:
-      - job: Plan
-        steps:
-          - script: |
-              echo "Downloading and installing Terraform..."
-              TERRAFORM_VERSION="1.7.5"
-              curl -sLO https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              mkdir -p /tmp/tf_install
-              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /tmp/tf_install
-              sudo mv /tmp/tf_install/terraform /usr/local/bin/
-              rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip /tmp/tf_install
-              terraform version
-            displayName: 'Download & Install Terraform'
+steps:
+  # 1. OPTIONAL TERRAFORM SETUP & APPLY (Runs only if runTerraform is true)
+  - script: |
+      echo "Downloading and installing Terraform..."
+      TERRAFORM_VERSION="1.7.5"
+      curl -sLO https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
+      mkdir -p /tmp/tf_install
+      unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /tmp/tf_install
+      sudo mv /tmp/tf_install/terraform /usr/local/bin/
+      rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip /tmp/tf_install
+      terraform version
+    displayName: 'Download & Install Terraform'
+    condition: eq('${{ parameters.runTerraform }}', true)
 
-          - task: AzureCLI@2
-            displayName: 'Run Terraform Init & Plan'
-            inputs:
-              azureSubscription: '$(azureServiceConnection)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                set -e
-                mkdir -p ~/.terraform.d
-                cat <<EOF > ~/.terraform.d/credentials.tfrc.json
-                {
-                  "credentials": {
-                    "app.terraform.io": {
-                      "token": "$(TF_TOKEN_app_terraform_io)"
-                    }
-                  }
-                }
-                EOF
+  - task: AzureCLI@2
+    displayName: 'Run Terraform Apply'
+    condition: eq('${{ parameters.runTerraform }}', true)
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -e
+        mkdir -p ~/.terraform.d
+        cat <<EOF > ~/.terraform.d/credentials.tfrc.json
+        {
+          "credentials": {
+            "app.terraform.io": {
+              "token": "$(TF_TOKEN_app_terraform_io)"
+            }
+          }
+        }
+        EOF
 
-                export ARM_CLIENT_ID=$servicePrincipalId
-                export ARM_TENANT_ID=$tenantId
-                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-                export ARM_USE_OIDC=true
+        export ARM_CLIENT_ID=$servicePrincipalId
+        export ARM_TENANT_ID=$tenantId
+        export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+        export ARM_USE_OIDC=true
 
-                cd terraform
-                terraform init
-                terraform plan -out=tfplan
+        cd terraform
+        terraform init
+        terraform apply -auto-approve
 
-  # STAGE 2: TERRAFORM APPLY (Runs only if plan ran and parameter is true)
-  - stage: Terraform_Apply
-    displayName: '2. Infrastructure Apply'
-    dependsOn: Terraform_Plan
-    condition: and(succeeded(), eq('${{ parameters.runTerraform }}', true))
-    jobs:
-      - job: Apply
-        steps:
-          - script: |
-              echo "Downloading and installing Terraform..."
-              TERRAFORM_VERSION="1.7.5"
-              curl -sLO https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              mkdir -p /tmp/tf_install
-              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /tmp/tf_install
-              sudo mv /tmp/tf_install/terraform /usr/local/bin/
-              rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip /tmp/tf_install
-              terraform version
-            displayName: 'Download & Install Terraform'
+  # 2. APPLICATION BUILD & HELM DEPLOYMENT (Always runs)
+  - task: AzureCLI@2
+    displayName: 'Build Image, Push to ACR, & Upgrade Helm Chart'
+    inputs:
+      azureSubscription: '$(azureServiceConnection)'
+      scriptType: 'bash'
+      scriptLocation: 'inlineScript'
+      inlineScript: |
+        set -e
+        # 1. Login to Azure Container Registry
+        az acr login --name $(acrName)
 
-          - task: AzureCLI@2
-            displayName: 'Apply Infrastructure to Azure'
-            inputs:
-              azureSubscription: '$(azureServiceConnection)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                set -e
-                mkdir -p ~/.terraform.d
-                cat <<EOF > ~/.terraform.d/credentials.tfrc.json
-                {
-                  "credentials": {
-                    "app.terraform.io": {
-                      "token": "$(TF_TOKEN_app_terraform_io)"
-                    }
-                  }
-                }
-                EOF
+        # 2. Define Image Tags using Git Commit SHA
+        IMAGE_TAG="$(Build.SourceVersion)"
+        ACR_URL="$(acrName).azurecr.io/myapp"
 
-                export ARM_CLIENT_ID=$servicePrincipalId
-                export ARM_TENANT_ID=$tenantId
-                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
-                export ARM_USE_OIDC=true
+        echo "Building Docker Image: ${ACR_URL}:${IMAGE_TAG}"
+        docker build -t ${ACR_URL}:${IMAGE_TAG} -t ${ACR_URL}:latest ./app
 
-                cd terraform
-                terraform init
-                terraform apply -auto-approve
+        # 3. Push Image to ACR
+        docker push ${ACR_URL}:${IMAGE_TAG}
+        docker push ${ACR_URL}:latest
 
-  # STAGE 3: APPLICATION BUILD & HELM DEPLOYMENT
-  - stage: Build_and_Deploy_App
-    displayName: '3. Docker Build & Helm Deploy to AKS'
-    dependsOn: ${{ if eq(parameters.runTerraform, true) }}:
-      - Terraform_Apply
-    condition: succeeded()
-    jobs:
-      - job: BuildAndDeploy
-        steps:
-          - task: AzureCLI@2
-            displayName: 'Build Image, Push to ACR, & Upgrade Helm Chart'
-            inputs:
-              azureSubscription: '$(azureServiceConnection)'
-              scriptType: 'bash'
-              scriptLocation: 'inlineScript'
-              inlineScript: |
-                set -e
-                # 1. Login to Azure Container Registry
-                az acr login --name $(acrName)
+        # 4. Get Credentials for AKS Cluster
+        az aks get-credentials \
+          --resource-group $(resourceGroup) \
+          --name $(aksClusterName) \
+          --overwrite-existing
 
-                # 2. Define Image Tags using Git Commit SHA
-                IMAGE_TAG="$(Build.SourceVersion)"
-                ACR_URL="$(acrName).azurecr.io/myapp"
+        # 5. Execute Helm Upgrade / Install
+        echo "Deploying Helm Chart to AKS..."
+        helm upgrade --install microservice-app "$(System.DefaultWorkingDirectory)/helm/my-app" \
+          --set image.repository=${ACR_URL} \
+          --set image.tag=${IMAGE_TAG} \
+          --namespace production \
+          --create-namespace
 
-                echo "Building Docker Image: ${ACR_URL}:${IMAGE_TAG}"
-                docker build -t ${ACR_URL}:${IMAGE_TAG} -t ${ACR_URL}:latest ./app
-
-                # 3. Push Image to ACR
-                docker push ${ACR_URL}:${IMAGE_TAG}
-                docker push ${ACR_URL}:latest
-
-                # 4. Get Credentials for AKS Cluster
-                az aks get-credentials \
-                  --resource-group $(resourceGroup) \
-                  --name $(aksClusterName) \
-                  --overwrite-existing
-
-                # 5. Execute Helm Upgrade / Install
-                echo "Deploying Helm Chart to AKS..."
-                helm upgrade --install microservice-app "$(System.DefaultWorkingDirectory)/helm/my-app" \
-                  --set image.repository=${ACR_URL} \
-                  --set image.tag=${IMAGE_TAG} \
-                  --namespace production \
-                  --create-namespace
-
-                # 6. Verify Rollout Status
-                kubectl rollout status deployment/microservice-app -n production
+        # 6. Verify Rollout Status
+        kubectl rollout status deployment/microservice-app -n production
