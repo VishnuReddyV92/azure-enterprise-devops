@@ -1,0 +1,138 @@
+trigger:
+  branches:
+    include:
+      - main
+
+variables:
+  - group: TFC-Secrets
+  - name: azureServiceConnection
+    value: 'azure-OIDC-Connection'
+  - name: tfcWorkspaceName
+    value: 'azure-enterprise-devops'
+  - name: acrName
+    value: 'acrenterprisedevops2026'
+  - name: resourceGroup
+    value: 'rg-devops-enterprise-prod'
+  - name: aksClusterName
+    value: 'aks-enterprise-cluster'
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+stages:
+  # STAGE 1: TERRAFORM PLAN
+  - stage: Terraform_Plan
+    displayName: '1. Infrastructure Plan (OIDC + TFC)'
+    jobs:
+      - job: Plan
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Run Terraform Init & Plan'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                mkdir -p ~/.terraform.d
+                cat <<EOF > ~/.terraform.d/credentials.tfrc.json
+                {
+                  "credentials": {
+                    "app.terraform.io": {
+                      "token": "$(TF_TOKEN_app_terraform_io)"
+                    }
+                  }
+                }
+                EOF
+
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_TENANT_ID=$tenantId
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                export ARM_USE_OIDC=true
+
+                cd terraform
+                terraform init
+                terraform plan -out=tfplan
+
+  # STAGE 2: TERRAFORM APPLY
+  - stage: Terraform_Apply
+    displayName: '2. Infrastructure Apply'
+    dependsOn: Terraform_Plan
+    condition: succeeded()
+    jobs:
+      - job: Apply
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Apply Infrastructure to Azure'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                mkdir -p ~/.terraform.d
+                cat <<EOF > ~/.terraform.d/credentials.tfrc.json
+                {
+                  "credentials": {
+                    "app.terraform.io": {
+                      "token": "$(TF_TOKEN_app_terraform_io)"
+                    }
+                  }
+                }
+                EOF
+
+                export ARM_CLIENT_ID=$servicePrincipalId
+                export ARM_TENANT_ID=$tenantId
+                export ARM_SUBSCRIPTION_ID=$(az account show --query id -o tsv)
+                export ARM_USE_OIDC=true
+
+                cd terraform
+                terraform init
+                terraform apply -auto-approve
+
+  # STAGE 3: APPLICATION BUILD & HELM DEPLOYMENT
+  - stage: Build_and_Deploy_App
+    displayName: '3. Docker Build & Helm Deploy to AKS'
+    dependsOn: Terraform_Apply
+    condition: succeeded()
+    jobs:
+      - job: BuildAndDeploy
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Build Image, Push to ACR, & Upgrade Helm Chart'
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: 'bash'
+              scriptLocation: 'inlineScript'
+              inlineScript: |
+                set -e
+                # 1. Login to Azure Container Registry
+                az acr login --name $(acrName)
+
+                # 2. Define Image Tags using Git Commit SHA
+                IMAGE_TAG="$(Build.SourceVersion)"
+                ACR_URL="$(acrName).azurecr.io/myapp"
+
+                echo "Building Docker Image: ${ACR_URL}:${IMAGE_TAG}"
+                docker build -t ${ACR_URL}:${IMAGE_TAG} -t ${ACR_URL}:latest ./app
+
+                # 3. Push Image to ACR
+                docker push ${ACR_URL}:${IMAGE_TAG}
+                docker push ${ACR_URL}:latest
+
+                # 4. Get Credentials for AKS Cluster
+                az aks get-credentials \
+                  --resource-group $(resourceGroup) \
+                  --name $(aksClusterName) \
+                  --overwrite-existing
+
+                # 5. Execute Helm Upgrade / Install
+                echo "Deploying Helm Chart to AKS..."
+                helm upgrade --install microservice-app ./helm/my-app \
+                  --set image.repository=${ACR_URL} \
+                  --set image.tag=${IMAGE_TAG} \
+                  --namespace production \
+                  --create-namespace
+
+                # 6. Verify Rollout Status
+                kubectl rollout status deployment/microservice-app -n production

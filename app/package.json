@@ -1,0 +1,12 @@
+{
+  "name": "azure-devops-aks-app",
+  "version": "1.0.0",
+  "description": "Sample microservice for Azure DevOps & AKS Pipeline",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
+  }
+}
