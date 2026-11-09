@@ -26,7 +26,6 @@ resource "azurerm_kubernetes_cluster" "aks" {
     vm_size         = "Standard_D2s_v3"
     os_disk_size_gb = 30
   }
-
   # ADD THIS REQUIRED BLOCK TO RESOLVE THE ERROR
   node_provisioning_profile {
     mode = "Manual"
