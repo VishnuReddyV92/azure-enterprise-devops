@@ -8,7 +8,7 @@ parameters:
   - name: runTerraform
     displayName: 'Run Infrastructure Provisioning (Terraform)?'
     type: boolean
-    default: false # Automatically unchecked so pushes only run app build/deploy by default
+    default: false
 
 variables:
   - group: TFC-Secrets
@@ -123,7 +123,6 @@ stages:
   # STAGE 3: APPLICATION BUILD & HELM DEPLOYMENT
   - stage: Build_and_Deploy_App
     displayName: '3. Docker Build & Helm Deploy to AKS'
-    # If Terraform is skipped, this stage runs immediately. If Terraform runs, this waits for Terraform_Apply to succeed.
     dependsOn: ${{ if eq(parameters.runTerraform, true) }}:
       - Terraform_Apply
     condition: succeeded()
