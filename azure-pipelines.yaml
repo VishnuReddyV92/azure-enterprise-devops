@@ -4,7 +4,6 @@ trigger:
     include:
       - main
 
-
 variables:
   - group: TFC-Secrets
   - name: azureServiceConnection
@@ -28,7 +27,6 @@ stages:
     jobs:
       - job: Plan
         steps:
-          # Extract into a temp folder to avoid colliding with the repo's 'terraform/' directory
           - script: |
               echo "Downloading and installing Terraform..."
               TERRAFORM_VERSION="1.7.5"
@@ -151,9 +149,9 @@ stages:
                   --name $(aksClusterName) \
                   --overwrite-existing
 
-                # 5. Execute Helm Upgrade / Install
+                # 5. Execute Helm Upgrade / Install using corrected path
                 echo "Deploying Helm Chart to AKS..."
-                helm upgrade --install microservice-app ./helm/my-app \
+                helm upgrade --install microservice-app "$(System.DefaultWorkingDirectory)/helm/my-app" \
                   --set image.repository=${ACR_URL} \
                   --set image.tag=${IMAGE_TAG} \
                   --namespace production \
