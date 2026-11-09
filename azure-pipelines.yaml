@@ -27,13 +27,15 @@ stages:
     jobs:
       - job: Plan
         steps:
-          # Fast direct download (no apt-get)
+          # Extract into a temp folder to avoid colliding with the repo's 'terraform/' directory
           - script: |
               echo "Downloading and installing Terraform..."
               TERRAFORM_VERSION="1.7.5"
               curl -sLO https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              sudo mv terraform /usr/local/bin/
+              mkdir -p /tmp/tf_install
+              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /tmp/tf_install
+              sudo mv /tmp/tf_install/terraform /usr/local/bin/
+              rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip /tmp/tf_install
               terraform version
             displayName: 'Download & Install Terraform'
 
@@ -77,8 +79,10 @@ stages:
               echo "Downloading and installing Terraform..."
               TERRAFORM_VERSION="1.7.5"
               curl -sLO https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip
-              sudo mv terraform /usr/local/bin/
+              mkdir -p /tmp/tf_install
+              unzip -o terraform_${TERRAFORM_VERSION}_linux_amd64.zip -d /tmp/tf_install
+              sudo mv /tmp/tf_install/terraform /usr/local/bin/
+              rm -rf terraform_${TERRAFORM_VERSION}_linux_amd64.zip /tmp/tf_install
               terraform version
             displayName: 'Download & Install Terraform'
 
